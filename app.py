@@ -310,12 +310,27 @@ def generate_waterfall(files_bytes_list):
 # ----------------------------
 # UI
 # ----------------------------
+# ----------------------------
+# UI
+# ----------------------------
+import re  # ✅ ADDED (only new import)
+
+def extract_week(filename):
+    match = re.search(r"CW-(\d+)", filename)
+    return int(match.group(1)) if match else 0
+
+
 if uploaded_files:
     if st.button("Generate", use_container_width=True, type="primary"):
         with st.spinner("Processing..."):
             try:
+
+                # ✅ ONLY CHANGE: SORT FILES BY CW WEEK
                 files_bytes_list = [(io.BytesIO(f.read()), f.name) for f in uploaded_files]
+                files_bytes_list.sort(key=lambda x: extract_week(x[1]))
+
                 result = generate_waterfall(files_bytes_list)
+
                 st.download_button(
                     label="Download",
                     data=result,
@@ -324,5 +339,6 @@ if uploaded_files:
                     use_container_width=True,
                     type="primary"
                 )
+
             except Exception as e:
                 st.error(str(e))
