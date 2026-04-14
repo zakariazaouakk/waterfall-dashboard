@@ -4,6 +4,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 import io
+import re
 
 st.set_page_config(page_title="Waterfall Generator", page_icon="📊", layout="centered")
 
@@ -26,6 +27,10 @@ required_columns = ["Sales Order", "Item Number", "Customer Item", "Date", "Quan
 # ----------------------------
 # HELPER FUNCTIONS
 # ----------------------------
+def extract_week_from_filename(filename):
+    match = re.search(r"CW-?(\d+)", filename, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
+
 def clean_columns(df):
     df.columns = df.columns.str.strip().str.replace('\n', '').str.replace('\r', '')
     return df
@@ -71,8 +76,14 @@ def compute_variation(waterfall, row_file_indices, all_weeks, lookback):
 def generate_waterfall(files_bytes_list):
     all_weeks_set = set()
     excel_data = []
+    
+    # Store snapshot week for each file
+    snapshot_weeks = []
 
     for file_bytes, file_name in files_bytes_list:
+        week_num = extract_week_from_filename(file_name)
+        snapshot_weeks.append(week_num)
+        
         xl = pd.ExcelFile(file_bytes)
         excel_dict = {}
         for sheet_name in xl.sheet_names:
@@ -107,7 +118,8 @@ def generate_waterfall(files_bytes_list):
             row_dict = {
                 'Sales Order': item['Sales Order'],
                 'Item Number': item['Item Number'],
-                'Customer Item': item['Customer Item']
+                'Customer Item': item['Customer Item'],
+                'SnapshotWeek': f"CW{snapshot_weeks[file_idx]:02d}"  # ← ADDED THIS LINE
             }
             for w in all_weeks:
                 row_dict[w] = 0
@@ -146,7 +158,7 @@ def generate_waterfall(files_bytes_list):
             waterfall_rows.append(row_dict)
             row_file_indices.append(file_idx)
 
-        waterfall_rows.append({col: '' for col in ['Sales Order', 'Item Number', 'Customer Item'] + all_weeks})
+        waterfall_rows.append({col: '' for col in ['Sales Order', 'Item Number', 'Customer Item', 'SnapshotWeek'] + all_weeks})  # ← MODIFIED
         row_file_indices.append(None)
 
     if waterfall_rows:
@@ -175,7 +187,8 @@ def generate_waterfall(files_bytes_list):
     waterfall['W-4']  = var_w4
     waterfall['W-13'] = var_w13
 
-    cols_order = ['Sales Order', 'Item Number', 'Customer Item', 'W-1', 'W-2', 'W-4', 'W-13'] + all_weeks
+    # ← MODIFIED: Added 'SnapshotWeek' to columns order
+    cols_order = ['Sales Order', 'Item Number', 'Customer Item', 'SnapshotWeek', 'W-1', 'W-2', 'W-4', 'W-13'] + all_weeks
     waterfall = waterfall[cols_order]
 
     output_buffer = io.BytesIO()
@@ -261,6 +274,10 @@ def generate_waterfall(files_bytes_list):
                 cell.fill      = solid(VAR_COL_BG_ALT if is_alt else VAR_COL_BG)
                 cell.alignment = center_align
                 cell.font      = Font(name="Arial", size=10)
+            elif col_name == 'SnapshotWeek':  # ← ADDED THIS
+                cell.fill      = solid(YELLOW)  # Highlight in yellow
+                cell.alignment = center_align
+                cell.font      = Font(name="Arial", bold=True, size=10)
             else:
                 cell.fill      = solid(WEEK_COL_BG_ALT if is_alt else WEEK_COL_BG)
                 cell.alignment = center_align
@@ -289,6 +306,7 @@ def generate_waterfall(files_bytes_list):
         'Sales Order':   14,
         'Item Number':   14,
         'Customer Item': 18,
+        'SnapshotWeek':  12,  # ← ADDED
         'W-1':           9,
         'W-2':           9,
         'W-4':           9,
@@ -298,7 +316,7 @@ def generate_waterfall(files_bytes_list):
         col_letter = get_column_letter(col_idx)
         ws.column_dimensions[col_letter].width = col_widths.get(col_name, 11)
 
-    ws.freeze_panes = "D2"
+    ws.freeze_panes = "E2"  # ← CHANGED from D2 to E2 because we added SnapshotWeek column
     ws.row_dimensions[1].height = 22
 
     final_buffer = io.BytesIO()
@@ -310,24 +328,12 @@ def generate_waterfall(files_bytes_list):
 # ----------------------------
 # UI
 # ----------------------------
-# ----------------------------
-# UI
-# ----------------------------
-import re  # ✅ ADDED (only new import)
-
-def extract_week(filename):
-    match = re.search(r"CW-(\d+)", filename)
-    return int(match.group(1)) if match else 0
-
-
 if uploaded_files:
     if st.button("Generate", use_container_width=True, type="primary"):
         with st.spinner("Processing..."):
             try:
-
-                # ✅ ONLY CHANGE: SORT FILES BY CW WEEK
                 files_bytes_list = [(io.BytesIO(f.read()), f.name) for f in uploaded_files]
-                files_bytes_list.sort(key=lambda x: extract_week(x[1]))
+                files_bytes_list.sort(key=lambda x: extract_week_from_filename(x[1]))
 
                 result = generate_waterfall(files_bytes_list)
 
