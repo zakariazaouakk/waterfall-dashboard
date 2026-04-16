@@ -283,10 +283,25 @@ def generate_waterfall(files_bytes_list):
                 cell.alignment = center_align
                 cell.font      = Font(name="Arial", size=10)
 
-        if file_idx < len(all_weeks):
-            snapshot_week = all_weeks[file_idx]
-            if snapshot_week in col_name_to_idx:
-                diag_cell = ws.cell(row=excel_row, column=col_name_to_idx[snapshot_week])
+                # Find and highlight the diagonal cell based on actual snapshot week from filename
+        if file_idx is not None and file_idx < len(snapshot_weeks):
+            snapshot_week_num = snapshot_weeks[file_idx]  # Get CW number from filename (e.g., 1, 2, 5, 13)
+            
+            # Find which future week column matches this snapshot week number
+            target_week_col = None
+            for week in all_weeks:
+                # all_weeks format is like "W05-2025", extract the week number
+                try:
+                    week_num = int(week.split('-')[0][1:])  # "W05" -> 5, "W13" -> 13
+                    if week_num == snapshot_week_num:
+                        target_week_col = week
+                        break
+                except (ValueError, IndexError):
+                    continue
+            
+            # Highlight the diagonal cell
+            if target_week_col and target_week_col in col_name_to_idx:
+                diag_cell = ws.cell(row=excel_row, column=col_name_to_idx[target_week_col])
                 diag_cell.fill = yellow_fill
 
         for col_name, col_data in var_col_data.items():
@@ -332,9 +347,33 @@ if uploaded_files:
     if st.button("Generate", use_container_width=True, type="primary"):
         with st.spinner("Processing..."):
             try:
-                files_bytes_list = [(io.BytesIO(f.read()), f.name) for f in uploaded_files]
+                # 🔥 Remove duplicates based on week number
+                unique_files = {}
+                duplicate_weeks = set()
+
+                for f in uploaded_files:
+                    week = extract_week_from_filename(f.name)
+
+                    if week == 0:
+                        st.error(f"File '{f.name}' does not contain a valid CW number.")
+                        st.stop()
+
+                    if week in unique_files:
+                        duplicate_weeks.add(week)
+                    else:
+                        unique_files[week] = f  # keep first occurrence
+
+                # Warn user if duplicates found
+                if duplicate_weeks:
+                    st.warning(f"Duplicate weeks detected and ignored: {sorted(duplicate_weeks)}")
+
+                # Convert to bytes list
+                files_bytes_list = [(io.BytesIO(f.read()), f.name) for f in unique_files.values()]
+
+                # Sort by week
                 files_bytes_list.sort(key=lambda x: extract_week_from_filename(x[1]))
 
+                # Generate result
                 result = generate_waterfall(files_bytes_list)
 
                 st.download_button(
