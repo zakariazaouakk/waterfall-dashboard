@@ -170,12 +170,25 @@ def generate_waterfall(files_bytes_list):
     for row_idx, file_idx in enumerate(row_file_indices):
         if file_idx is None:
             continue
-        if file_idx < len(all_weeks):
-            snapshot_week = all_weeks[file_idx]
-            snapshot_col_pos = all_weeks.index(snapshot_week)
-            for col_pos in range(snapshot_col_pos):
-                week_col = all_weeks[col_pos]
-                waterfall.at[row_idx, week_col] = ''
+
+        # ✅ Get actual snapshot week from filename
+        snapshot_week_num = snapshot_weeks[file_idx]
+
+        # ✅ Find matching column in all_weeks
+        snapshot_week = next(
+            (w for w in all_weeks if int(w.split('-')[0][1:]) == snapshot_week_num),
+            None
+    )
+
+        if snapshot_week is None:
+            continue  # safety
+
+        snapshot_col_pos = all_weeks.index(snapshot_week)
+
+    # Blank out previous weeks
+        for col_pos in range(snapshot_col_pos):
+            week_col = all_weeks[col_pos]
+            waterfall.at[row_idx, week_col] = ''
 
     var_w1  = compute_variation(waterfall, row_file_indices, all_weeks, lookback=1)
     var_w2  = compute_variation(waterfall, row_file_indices, all_weeks, lookback=2)
