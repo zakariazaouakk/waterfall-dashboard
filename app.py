@@ -73,145 +73,17 @@ def compute_variation(waterfall, row_file_indices, all_weeks, lookback):
                 variation_col.append(pct)
     return variation_col
 
-def apply_sheet_formatting(ws, waterfall, row_file_indices, all_weeks, snapshot_weeks,
-                           var_w1, var_w2, var_w4, var_w13, id_col_names, freeze_col):
-    """Shared formatting logic for both sheets."""
-    HEADER_BG       = "1F4E79"
-    HEADER_FONT     = "FFFFFF"
-    VAR_COL_BG      = "BDD7EE"
-    VAR_COL_BG_ALT  = "9DC3E6"
-    ID_COL_BG       = "DEEAF1"
-    ID_COL_BG_ALT   = "B8CCE4"
-    WEEK_COL_BG     = "EBF3FB"
-    WEEK_COL_BG_ALT = "D6E4F0"
-    SEP_BG          = "F2F2F2"
-    YELLOW          = "FFFF00"
-    RED             = "FF0000"
-
-    def solid(hex_color):
-        return PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
-
-    header_fill  = solid(HEADER_BG)
-    header_font  = Font(name="Arial", bold=True, color=HEADER_FONT, size=10)
-    yellow_fill  = solid(YELLOW)
-    red_fill     = solid(RED)
-    white_font   = Font(name="Arial", color="FFFFFF", bold=True, size=10)
-    sep_fill     = solid(SEP_BG)
-    center_align = Alignment(horizontal="center", vertical="center")
-    left_align   = Alignment(horizontal="left", vertical="center")
-
-    header = [cell.value for cell in ws[1]]
-    col_name_to_idx = {name: idx + 1 for idx, name in enumerate(header)}
-
-    for col_idx, col_name in enumerate(header, start=1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.fill      = header_fill
-        cell.font      = header_font
-        cell.alignment = center_align
-
-    var_cols = {'W-1', 'W-2', 'W-4', 'W-13'}
-
-    group_index   = []
-    current_group = -1
-    current_key   = None
-
-    for row_idx, file_idx in enumerate(row_file_indices):
-        if file_idx is None:
-            group_index.append(None)
-        else:
-            key = waterfall.at[row_idx, id_col_names[0]]
-            if key != current_key:
-                current_key = key
-                current_group += 1
-            group_index.append(current_group)
-
-    var_col_data  = {'W-1': var_w1, 'W-2': var_w2, 'W-4': var_w4, 'W-13': var_w13}
-    red_threshold = {'W-1': 0.20, 'W-2': 0.20, 'W-4': 0.20, 'W-13': 0.20}
-
-    for row_idx, file_idx in enumerate(row_file_indices):
-        excel_row = row_idx + 2
-
-        if file_idx is None:
-            for col_idx in range(1, len(header) + 1):
-                ws.cell(row=excel_row, column=col_idx).fill = sep_fill
-            continue
-
-        is_alt = (group_index[row_idx] % 2 == 1)
-
-        for col_idx, col_name in enumerate(header, start=1):
-            cell = ws.cell(row=excel_row, column=col_idx)
-            if col_name in id_col_names:
-                cell.fill      = solid(ID_COL_BG_ALT if is_alt else ID_COL_BG)
-                cell.alignment = left_align
-                cell.font      = Font(name="Arial", size=10)
-            elif col_name in var_cols:
-                cell.fill      = solid(VAR_COL_BG_ALT if is_alt else VAR_COL_BG)
-                cell.alignment = center_align
-                cell.font      = Font(name="Arial", size=10)
-            elif col_name == 'SnapshotWeek':
-                cell.fill      = solid(YELLOW)
-                cell.alignment = center_align
-                cell.font      = Font(name="Arial", bold=True, size=10)
-            else:
-                cell.fill      = solid(WEEK_COL_BG_ALT if is_alt else WEEK_COL_BG)
-                cell.alignment = center_align
-                cell.font      = Font(name="Arial", size=10)
-
-        if file_idx is not None and file_idx < len(snapshot_weeks):
-            snapshot_week_num = snapshot_weeks[file_idx]
-            target_week_col = None
-            for week in all_weeks:
-                try:
-                    week_num = int(week.split('-')[0][1:])
-                    if week_num == snapshot_week_num:
-                        target_week_col = week
-                        break
-                except (ValueError, IndexError):
-                    continue
-            if target_week_col and target_week_col in col_name_to_idx:
-                diag_cell = ws.cell(row=excel_row, column=col_name_to_idx[target_week_col])
-                diag_cell.fill = yellow_fill
-
-        for col_name, col_data in var_col_data.items():
-            col_idx = col_name_to_idx.get(col_name)
-            if not col_idx:
-                continue
-            raw_val = col_data[row_idx]
-            cell = ws.cell(row=excel_row, column=col_idx)
-            if isinstance(raw_val, float):
-                cell.value         = raw_val
-                cell.number_format = '0.0%'
-                if abs(raw_val) >= red_threshold[col_name]:
-                    cell.fill = red_fill
-                    cell.font = white_font
-
-    col_widths = {
-        'Item Number':   14,
-        'Sales Order':   14,
-        'Customer Item': 18,
-        'SnapshotWeek':  12,
-        'W-1':           9,
-        'W-2':           9,
-        'W-4':           9,
-        'W-13':          9,
-    }
-    for col_idx, col_name in enumerate(header, start=1):
-        col_letter = get_column_letter(col_idx)
-        ws.column_dimensions[col_letter].width = col_widths.get(col_name, 11)
-
-    ws.freeze_panes = freeze_col
-    ws.row_dimensions[1].height = 22
-
-
 def generate_waterfall(files_bytes_list):
     all_weeks_set = set()
     excel_data = []
+    
+    # Store snapshot week for each file
     snapshot_weeks = []
 
     for file_bytes, file_name in files_bytes_list:
         week_num = extract_week_from_filename(file_name)
         snapshot_weeks.append(week_num)
-
+        
         xl = pd.ExcelFile(file_bytes)
         excel_dict = {}
         for sheet_name in xl.sheet_names:
@@ -228,9 +100,6 @@ def generate_waterfall(files_bytes_list):
 
     all_weeks = sorted(all_weeks_set, key=lambda x: (int(x.split('-')[1]), int(x[1:].split('-')[0])))
 
-    # -------------------------------------------------------
-    # SHEET 1: Original logic (Sales Order + Item + Customer)
-    # -------------------------------------------------------
     waterfall_rows = []
     row_file_indices = []
 
@@ -250,7 +119,7 @@ def generate_waterfall(files_bytes_list):
                 'Sales Order': item['Sales Order'],
                 'Item Number': item['Item Number'],
                 'Customer Item': item['Customer Item'],
-                'SnapshotWeek': f"CW{snapshot_weeks[file_idx]:02d}"
+                'SnapshotWeek': f"CW{snapshot_weeks[file_idx]:02d}"  # ← ADDED THIS LINE
             }
             for w in all_weeks:
                 row_dict[w] = 0
@@ -289,7 +158,7 @@ def generate_waterfall(files_bytes_list):
             waterfall_rows.append(row_dict)
             row_file_indices.append(file_idx)
 
-        waterfall_rows.append({col: '' for col in ['Sales Order', 'Item Number', 'Customer Item', 'SnapshotWeek'] + all_weeks})
+        waterfall_rows.append({col: '' for col in ['Sales Order', 'Item Number', 'Customer Item', 'SnapshotWeek'] + all_weeks})  # ← MODIFIED
         row_file_indices.append(None)
 
     if waterfall_rows:
@@ -301,12 +170,25 @@ def generate_waterfall(files_bytes_list):
     for row_idx, file_idx in enumerate(row_file_indices):
         if file_idx is None:
             continue
-        if file_idx < len(all_weeks):
-            snapshot_week = all_weeks[file_idx]
-            snapshot_col_pos = all_weeks.index(snapshot_week)
-            for col_pos in range(snapshot_col_pos):
-                week_col = all_weeks[col_pos]
-                waterfall.at[row_idx, week_col] = ''
+
+        # ✅ Get actual snapshot week from filename
+        snapshot_week_num = snapshot_weeks[file_idx]
+
+        # ✅ Find matching column in all_weeks
+        snapshot_week = next(
+            (w for w in all_weeks if int(w.split('-')[0][1:]) == snapshot_week_num),
+            None
+    )
+
+        if snapshot_week is None:
+            continue  # safety
+
+        snapshot_col_pos = all_weeks.index(snapshot_week)
+
+    # Blank out previous weeks
+        for col_pos in range(snapshot_col_pos):
+            week_col = all_weeks[col_pos]
+            waterfall.at[row_idx, week_col] = ''
 
     var_w1  = compute_variation(waterfall, row_file_indices, all_weeks, lookback=1)
     var_w2  = compute_variation(waterfall, row_file_indices, all_weeks, lookback=2)
@@ -318,132 +200,152 @@ def generate_waterfall(files_bytes_list):
     waterfall['W-4']  = var_w4
     waterfall['W-13'] = var_w13
 
+    # ← MODIFIED: Added 'SnapshotWeek' to columns order
     cols_order = ['Sales Order', 'Item Number', 'Customer Item', 'SnapshotWeek', 'W-1', 'W-2', 'W-4', 'W-13'] + all_weeks
     waterfall = waterfall[cols_order]
 
-    # -------------------------------------------------------
-    # SHEET 2: Aggregated by Item Number only
-    # -------------------------------------------------------
-    item_rows = []
-    item_row_file_indices = []
-
-    # Get unique item numbers across all files
-    all_items_sets = []
-    for excel_dict in excel_data:
-        df_firm = excel_dict.get('Firm', pd.DataFrame(columns=['Sales Order', 'Item Number', 'Customer Item', 'Date', 'Quantity', 'YearWeek', 'SheetType']))
-        df_forecast = excel_dict.get('Forecast', pd.DataFrame(columns=['Sales Order', 'Item Number', 'Customer Item', 'Date', 'Quantity', 'YearWeek', 'SheetType']))
-        items = pd.concat([df_firm[['Item Number']], df_forecast[['Item Number']]]).drop_duplicates()
-        all_items_sets.append(items)
-
-    unique_items_df = pd.concat(all_items_sets).drop_duplicates().sort_values('Item Number').reset_index(drop=True)
-
-    for _, item_row in unique_items_df.iterrows():
-        item_num = item_row['Item Number']
-
-        for file_idx, excel_dict in enumerate(excel_data):
-            row_dict = {
-                'Item Number': item_num,
-                'SnapshotWeek': f"CW{snapshot_weeks[file_idx]:02d}"
-            }
-            for w in all_weeks:
-                row_dict[w] = 0
-
-            df_firm = excel_dict.get('Firm', pd.DataFrame(columns=['Sales Order', 'Item Number', 'Customer Item', 'Date', 'Quantity', 'YearWeek', 'SheetType']))
-            df_forecast = excel_dict.get('Forecast', pd.DataFrame(columns=['Sales Order', 'Item Number', 'Customer Item', 'Date', 'Quantity', 'YearWeek', 'SheetType']))
-
-            firm_rows = df_firm[df_firm['Item Number'] == item_num].copy()
-            forecast_rows = df_forecast[df_forecast['Item Number'] == item_num].copy()
-
-            # Build a set of (Sales Order, Customer Item, DateStr) combos that have firm entries
-            # so we only exclude forecast for that exact combo, not globally for that date
-            firm_keys = set(
-                zip(firm_rows['Sales Order'], firm_rows['Customer Item'], firm_rows['DateStr'])
-            )
-
-            # Add all firm quantities (summed per Sales Order + Customer Item + DateStr)
-            for _, r in firm_rows.groupby(['Sales Order', 'Customer Item', 'DateStr'], as_index=False)['Quantity'].sum().iterrows():
-                week = year_week(pd.to_datetime(r['DateStr']))
-                row_dict[week] += r['Quantity']
-
-            # Add forecast quantities only for combos that have no firm entry
-            for _, r in forecast_rows.iterrows():
-                key = (r['Sales Order'], r['Customer Item'], r['DateStr'])
-                if key not in firm_keys:
-                    week = year_week(pd.to_datetime(r['DateStr']))
-                    row_dict[week] += r['Quantity']
-
-            item_rows.append(row_dict)
-            item_row_file_indices.append(file_idx)
-
-        item_rows.append({col: '' for col in ['Item Number', 'SnapshotWeek'] + all_weeks})
-        item_row_file_indices.append(None)
-
-    if item_rows:
-        item_rows.pop()
-        item_row_file_indices.pop()
-
-    waterfall_items = pd.DataFrame(item_rows)
-
-    # Blank out weeks before snapshot (same logic as sheet 1)
-    for row_idx, file_idx in enumerate(item_row_file_indices):
-        if file_idx is None:
-            continue
-        if file_idx < len(all_weeks):
-            snapshot_week = all_weeks[file_idx]
-            snapshot_col_pos = all_weeks.index(snapshot_week)
-            for col_pos in range(snapshot_col_pos):
-                week_col = all_weeks[col_pos]
-                waterfall_items.at[row_idx, week_col] = ''
-
-    item_var_w1  = compute_variation(waterfall_items, item_row_file_indices, all_weeks, lookback=1)
-    item_var_w2  = compute_variation(waterfall_items, item_row_file_indices, all_weeks, lookback=2)
-    item_var_w4  = compute_variation(waterfall_items, item_row_file_indices, all_weeks, lookback=4)
-    item_var_w13 = compute_variation(waterfall_items, item_row_file_indices, all_weeks, lookback=13)
-
-    waterfall_items['W-1']  = item_var_w1
-    waterfall_items['W-2']  = item_var_w2
-    waterfall_items['W-4']  = item_var_w4
-    waterfall_items['W-13'] = item_var_w13
-
-    item_cols_order = ['Item Number', 'SnapshotWeek', 'W-1', 'W-2', 'W-4', 'W-13'] + all_weeks
-    waterfall_items = waterfall_items[item_cols_order]
-
-    # -------------------------------------------------------
-    # Write both sheets to Excel
-    # -------------------------------------------------------
     output_buffer = io.BytesIO()
-    with pd.ExcelWriter(output_buffer, engine='openpyxl') as writer:
-        waterfall.to_excel(writer, index=False, sheet_name='Detail')
-        waterfall_items.to_excel(writer, index=False, sheet_name='By Item')
+    waterfall.to_excel(output_buffer, index=False)
     output_buffer.seek(0)
 
     wb = load_workbook(output_buffer)
+    ws = wb.active
 
-    # Format Sheet 1 (Detail)
-    ws1 = wb['Detail']
-    apply_sheet_formatting(
-        ws=ws1,
-        waterfall=waterfall,
-        row_file_indices=row_file_indices,
-        all_weeks=all_weeks,
-        snapshot_weeks=snapshot_weeks,
-        var_w1=var_w1, var_w2=var_w2, var_w4=var_w4, var_w13=var_w13,
-        id_col_names=['Sales Order', 'Item Number', 'Customer Item'],
-        freeze_col="E2"
-    )
+    HEADER_BG       = "1F4E79"
+    HEADER_FONT     = "FFFFFF"
+    VAR_COL_BG      = "BDD7EE"
+    VAR_COL_BG_ALT  = "9DC3E6"
+    ID_COL_BG       = "DEEAF1"
+    ID_COL_BG_ALT   = "B8CCE4"
+    WEEK_COL_BG     = "EBF3FB"
+    WEEK_COL_BG_ALT = "D6E4F0"
+    SEP_BG          = "F2F2F2"
+    YELLOW          = "FFFF00"
+    RED             = "FF0000"
 
-    # Format Sheet 2 (By Item)
-    ws2 = wb['By Item']
-    apply_sheet_formatting(
-        ws=ws2,
-        waterfall=waterfall_items,
-        row_file_indices=item_row_file_indices,
-        all_weeks=all_weeks,
-        snapshot_weeks=snapshot_weeks,
-        var_w1=item_var_w1, var_w2=item_var_w2, var_w4=item_var_w4, var_w13=item_var_w13,
-        id_col_names=['Item Number'],
-        freeze_col="C2"
-    )
+    def solid(hex_color):
+        return PatternFill(start_color=hex_color, end_color=hex_color, fill_type="solid")
+
+    header_fill  = solid(HEADER_BG)
+    header_font  = Font(name="Arial", bold=True, color=HEADER_FONT, size=10)
+    yellow_fill  = solid(YELLOW)
+    red_fill     = solid(RED)
+    white_font   = Font(name="Arial", color="FFFFFF", bold=True, size=10)
+    sep_fill     = solid(SEP_BG)
+    center_align = Alignment(horizontal="center", vertical="center")
+    left_align   = Alignment(horizontal="left", vertical="center")
+
+    header = [cell.value for cell in ws[1]]
+    col_name_to_idx = {name: idx + 1 for idx, name in enumerate(header)}
+
+    for col_idx, col_name in enumerate(header, start=1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.fill      = header_fill
+        cell.font      = header_font
+        cell.alignment = center_align
+
+    id_cols  = {'Sales Order', 'Item Number', 'Customer Item'}
+    var_cols = {'W-1', 'W-2', 'W-4', 'W-13'}
+
+    group_index   = []
+    current_group = -1
+    current_key   = None
+
+    for row_idx, file_idx in enumerate(row_file_indices):
+        if file_idx is None:
+            group_index.append(None)
+        else:
+            key = (
+                waterfall.at[row_idx, 'Sales Order'],
+                waterfall.at[row_idx, 'Item Number'],
+            )
+            if key != current_key:
+                current_key = key
+                current_group += 1
+            group_index.append(current_group)
+
+    var_col_data  = {'W-1': var_w1, 'W-2': var_w2, 'W-4': var_w4, 'W-13': var_w13}
+    red_threshold = {'W-1': 0.20, 'W-2': 0.20, 'W-4': 0.20, 'W-13': 0.20}
+
+    for row_idx, file_idx in enumerate(row_file_indices):
+        excel_row = row_idx + 2
+
+        if file_idx is None:
+            for col_idx in range(1, len(header) + 1):
+                ws.cell(row=excel_row, column=col_idx).fill = sep_fill
+            continue
+
+        is_alt = (group_index[row_idx] % 2 == 1)
+
+        for col_idx, col_name in enumerate(header, start=1):
+            cell = ws.cell(row=excel_row, column=col_idx)
+            if col_name in id_cols:
+                cell.fill      = solid(ID_COL_BG_ALT if is_alt else ID_COL_BG)
+                cell.alignment = left_align
+                cell.font      = Font(name="Arial", size=10)
+            elif col_name in var_cols:
+                cell.fill      = solid(VAR_COL_BG_ALT if is_alt else VAR_COL_BG)
+                cell.alignment = center_align
+                cell.font      = Font(name="Arial", size=10)
+            elif col_name == 'SnapshotWeek':  # ← ADDED THIS
+                cell.fill      = solid(YELLOW)  # Highlight in yellow
+                cell.alignment = center_align
+                cell.font      = Font(name="Arial", bold=True, size=10)
+            else:
+                cell.fill      = solid(WEEK_COL_BG_ALT if is_alt else WEEK_COL_BG)
+                cell.alignment = center_align
+                cell.font      = Font(name="Arial", size=10)
+
+                # Find and highlight the diagonal cell based on actual snapshot week from filename
+        if file_idx is not None and file_idx < len(snapshot_weeks):
+            snapshot_week_num = snapshot_weeks[file_idx]  # Get CW number from filename (e.g., 1, 2, 5, 13)
+            
+            # Find which future week column matches this snapshot week number
+            target_week_col = None
+            for week in all_weeks:
+                # all_weeks format is like "W05-2025", extract the week number
+                try:
+                    week_num = int(week.split('-')[0][1:])  # "W05" -> 5, "W13" -> 13
+                    if week_num == snapshot_week_num:
+                        target_week_col = week
+                        break
+                except (ValueError, IndexError):
+                    continue
+            
+            # Highlight the diagonal cell
+            if target_week_col and target_week_col in col_name_to_idx:
+                diag_cell = ws.cell(row=excel_row, column=col_name_to_idx[target_week_col])
+                diag_cell.fill = yellow_fill
+
+        for col_name, col_data in var_col_data.items():
+            col_idx = col_name_to_idx.get(col_name)
+            if not col_idx:
+                continue
+            raw_val = col_data[row_idx]
+            cell = ws.cell(row=excel_row, column=col_idx)
+            if isinstance(raw_val, float):
+                cell.value         = raw_val
+                cell.number_format = '0.0%'
+                if abs(raw_val) >= red_threshold[col_name]:
+                    cell.fill = red_fill
+                    cell.font = white_font
+
+    col_widths = {
+        'Sales Order':   14,
+        'Item Number':   14,
+        'Customer Item': 18,
+        'SnapshotWeek':  12,  # ← ADDED
+        'W-1':           9,
+        'W-2':           9,
+        'W-4':           9,
+        'W-13':          9,
+    }
+    for col_idx, col_name in enumerate(header, start=1):
+        col_letter = get_column_letter(col_idx)
+        ws.column_dimensions[col_letter].width = col_widths.get(col_name, 11)
+
+    ws.freeze_panes = "E2"  # ← CHANGED from D2 to E2 because we added SnapshotWeek column
+    ws.row_dimensions[1].height = 22
 
     final_buffer = io.BytesIO()
     wb.save(final_buffer)
@@ -458,9 +360,33 @@ if uploaded_files:
     if st.button("Generate", use_container_width=True, type="primary"):
         with st.spinner("Processing..."):
             try:
-                files_bytes_list = [(io.BytesIO(f.read()), f.name) for f in uploaded_files]
+                # 🔥 Remove duplicates based on week number
+                unique_files = {}
+                duplicate_weeks = set()
+
+                for f in uploaded_files:
+                    week = extract_week_from_filename(f.name)
+
+                    if week == 0:
+                        st.error(f"File '{f.name}' does not contain a valid CW number.")
+                        st.stop()
+
+                    if week in unique_files:
+                        duplicate_weeks.add(week)
+                    else:
+                        unique_files[week] = f  # keep first occurrence
+
+                # Warn user if duplicates found
+                if duplicate_weeks:
+                    st.warning(f"Duplicate weeks detected and ignored: {sorted(duplicate_weeks)}")
+
+                # Convert to bytes list
+                files_bytes_list = [(io.BytesIO(f.read()), f.name) for f in unique_files.values()]
+
+                # Sort by week
                 files_bytes_list.sort(key=lambda x: extract_week_from_filename(x[1]))
 
+                # Generate result
                 result = generate_waterfall(files_bytes_list)
 
                 st.download_button(
