@@ -1,7 +1,8 @@
 import streamlit as st
 import io
 import re
-from detail_waterfall import generate_detail_waterfall, extract_week_from_filename
+from detail_waterfall import generate_detail_waterfall
+from utils import extract_week_from_filename
 from item_waterfall import generate_item_waterfall
 
 st.set_page_config(page_title="Waterfall Generator", page_icon="📊", layout="centered")
