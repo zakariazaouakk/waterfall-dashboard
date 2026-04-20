@@ -6,15 +6,26 @@ from openpyxl.utils import get_column_letter
 from utils import (
     load_excel_data, blank_pre_snapshot_weeks, apply_excel_formatting,
     compute_variation, empty_df, year_week,
-    VAR_COLS,
 )
 
-def generate_detail_waterfall(files_bytes_list):
-    """Generate detail waterfall Excel file (one row per Sales Order / Item / Customer Item)."""
-    excel_data, snapshot_weeks, all_weeks_set = load_excel_data(files_bytes_list)
-    all_weeks = sorted(all_weeks_set, key=lambda x: (int(x.split("-")[1]), int(x[1:].split("-")[0])))
 
-    # ── Build unique (Sales Order, Item Number, Customer Item) combinations ───
+def generate_detail_waterfall(files_bytes_list, pre_loaded=None):
+    """
+    Generate detail waterfall Excel (one row per Sales Order / Item / Customer Item).
+
+    If pre_loaded=(excel_data, snapshot_weeks, all_weeks_set) is supplied
+    (e.g. after merging with a previous waterfall) it is used directly and
+    files_bytes_list is ignored for parsing.
+    """
+    if pre_loaded is not None:
+        excel_data, snapshot_weeks, all_weeks_set = pre_loaded
+    else:
+        excel_data, snapshot_weeks, all_weeks_set = load_excel_data(files_bytes_list)
+
+    all_weeks = sorted(all_weeks_set,
+                       key=lambda x: (int(x.split("-")[1]), int(x[1:].split("-")[0])))
+
+    # ── Unique (Sales Order, Item Number, Customer Item) combinations ─────────
     unique_combinations = pd.concat([
         pd.concat([
             excel_dict.get("Firm",     empty_df())[["Sales Order", "Item Number", "Customer Item"]],
@@ -24,8 +35,8 @@ def generate_detail_waterfall(files_bytes_list):
     ]).drop_duplicates()
 
     # ── Build waterfall rows ──────────────────────────────────────────────────
-    waterfall_rows     = []
-    row_file_indices   = []
+    waterfall_rows   = []
+    row_file_indices = []
 
     for _, item in unique_combinations.iterrows():
         for file_idx, excel_dict in enumerate(excel_data):
@@ -40,37 +51,43 @@ def generate_detail_waterfall(files_bytes_list):
             df_firm     = excel_dict.get("Firm",     empty_df())
             df_forecast = excel_dict.get("Forecast", empty_df())
 
-            mask = (
+            firm_mask = (
                 (df_firm["Sales Order"]   == item["Sales Order"]) &
                 (df_firm["Item Number"]   == item["Item Number"]) &
                 (df_firm["Customer Item"] == item["Customer Item"])
             )
-            firm_rows = df_firm[mask].groupby("DateStr", as_index=False)["Quantity"].sum()
+            firm_rows = df_firm[firm_mask].groupby("DateStr", as_index=False)["Quantity"].sum()
             firm_rows["YearWeek"] = pd.to_datetime(firm_rows["DateStr"]).apply(year_week)
 
-            mask = (
+            fore_mask = (
                 (df_forecast["Sales Order"]   == item["Sales Order"]) &
                 (df_forecast["Item Number"]   == item["Item Number"]) &
                 (df_forecast["Customer Item"] == item["Customer Item"])
             )
-            forecast_rows = df_forecast[mask].groupby("DateStr", as_index=False)["Quantity"].sum()
+            forecast_rows = df_forecast[fore_mask].groupby("DateStr", as_index=False)["Quantity"].sum()
             forecast_rows["YearWeek"] = pd.to_datetime(forecast_rows["DateStr"]).apply(year_week)
 
             firm_by_date = firm_rows.set_index("DateStr")["Quantity"].to_dict()
 
             for date_str, qty in firm_by_date.items():
-                row_dict[year_week(pd.to_datetime(date_str))] += qty
+                wk = year_week(pd.to_datetime(date_str))
+                if wk in row_dict:
+                    row_dict[wk] += qty
 
             for _, r in forecast_rows.iterrows():
                 if r["DateStr"] not in firm_by_date:
-                    row_dict[r["YearWeek"]] += r["Quantity"]
+                    wk = r["YearWeek"]
+                    if wk in row_dict:
+                        row_dict[wk] += r["Quantity"]
 
             waterfall_rows.append(row_dict)
             row_file_indices.append(file_idx)
 
         # Separator row
-        waterfall_rows.append({col: "" for col in
-                               ["Sales Order", "Item Number", "Customer Item", "SnapshotWeek"] + all_weeks})
+        waterfall_rows.append(
+            {col: "" for col in
+             ["Sales Order", "Item Number", "Customer Item", "SnapshotWeek"] + all_weeks}
+        )
         row_file_indices.append(None)
 
     # Remove trailing separator
@@ -79,7 +96,6 @@ def generate_detail_waterfall(files_bytes_list):
         row_file_indices.pop()
 
     waterfall = pd.DataFrame(waterfall_rows)
-
     blank_pre_snapshot_weeks(waterfall, row_file_indices, snapshot_weeks, all_weeks)
 
     # ── Variation columns ─────────────────────────────────────────────────────
@@ -108,7 +124,6 @@ def generate_detail_waterfall(files_bytes_list):
     header          = [cell.value for cell in ws[1]]
     col_name_to_idx = {name: idx + 1 for idx, name in enumerate(header)}
 
-    # Group index for alternating row colours
     group_index   = []
     current_group = -1
     current_key   = None
@@ -124,25 +139,27 @@ def generate_detail_waterfall(files_bytes_list):
             group_index.append(current_group)
 
     apply_excel_formatting(
-        ws             = ws,
-        header         = header,
-        col_name_to_idx= col_name_to_idx,
+        ws              = ws,
+        header          = header,
+        col_name_to_idx = col_name_to_idx,
         row_file_indices= row_file_indices,
-        group_index    = group_index,
-        id_cols        = {"Sales Order", "Item Number", "Customer Item"},
-        snapshot_weeks = snapshot_weeks,
-        all_weeks      = all_weeks,
-        var_col_data   = {"W-1": var_w1, "W-2": var_w2, "W-4": var_w4, "W-13": var_w13},
+        group_index     = group_index,
+        id_cols         = {"Sales Order", "Item Number", "Customer Item"},
+        snapshot_weeks  = snapshot_weeks,
+        all_weeks       = all_weeks,
+        var_col_data    = {"W-1": var_w1, "W-2": var_w2,
+                           "W-4": var_w4, "W-13": var_w13},
     )
 
     col_widths = {
-        "Sales Order":   14, "Item Number": 14, "Customer Item": 18,
-        "SnapshotWeek":  12, "W-1": 9, "W-2": 9, "W-4": 9, "W-13": 9,
+        "Sales Order": 14, "Item Number": 14, "Customer Item": 18,
+        "SnapshotWeek": 12, "W-1": 9, "W-2": 9, "W-4": 9, "W-13": 9,
     }
     for col_idx, col_name in enumerate(header, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(col_name, 11)
+        ws.column_dimensions[get_column_letter(col_idx)].width = \
+            col_widths.get(col_name, 11)
 
-    ws.freeze_panes         = "E2"
+    ws.freeze_panes          = "E2"
     ws.row_dimensions[1].height = 22
 
     final_buffer = io.BytesIO()
