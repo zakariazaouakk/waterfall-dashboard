@@ -6,15 +6,26 @@ from openpyxl.utils import get_column_letter
 from utils import (
     load_excel_data, blank_pre_snapshot_weeks, apply_excel_formatting,
     compute_variation, empty_df, year_week,
-    VAR_COLS,
 )
 
-def generate_item_waterfall(files_bytes_list):
-    """Generate item-aggregated waterfall Excel file (one row per Item Number)."""
-    excel_data, snapshot_weeks, all_weeks_set = load_excel_data(files_bytes_list)
-    all_weeks = sorted(all_weeks_set, key=lambda x: (int(x.split("-")[1]), int(x[1:].split("-")[0])))
 
-    # ── Unique item numbers across all files ──────────────────────────────────
+def generate_item_waterfall(files_bytes_list, pre_loaded=None):
+    """
+    Generate item-aggregated waterfall Excel (one row per Item Number).
+
+    If pre_loaded=(excel_data, snapshot_weeks, all_weeks_set) is supplied
+    (e.g. after merging with a previous waterfall) it is used directly and
+    files_bytes_list is ignored for parsing.
+    """
+    if pre_loaded is not None:
+        excel_data, snapshot_weeks, all_weeks_set = pre_loaded
+    else:
+        excel_data, snapshot_weeks, all_weeks_set = load_excel_data(files_bytes_list)
+
+    all_weeks = sorted(all_weeks_set,
+                       key=lambda x: (int(x.split("-")[1]), int(x[1:].split("-")[0])))
+
+    # ── Unique Item Numbers across all files ──────────────────────────────────
     unique_items_df = pd.concat([
         pd.concat([
             excel_dict.get("Firm",     empty_df())[["Item Number"]],
@@ -24,7 +35,7 @@ def generate_item_waterfall(files_bytes_list):
     ]).drop_duplicates().sort_values("Item Number").reset_index(drop=True)
 
     # ── Build waterfall rows ──────────────────────────────────────────────────
-    item_rows            = []
+    item_rows             = []
     item_row_file_indices = []
 
     for _, item_row in unique_items_df.iterrows():
@@ -43,28 +54,32 @@ def generate_item_waterfall(files_bytes_list):
             firm_rows     = df_firm    [df_firm    ["Item Number"] == item_num].copy()
             forecast_rows = df_forecast[df_forecast["Item Number"] == item_num].copy()
 
-            # (Sales Order, Customer Item, DateStr) keys that have firm data
+            # (Sales Order, Customer Item, DateStr) keys that have firm entries
             firm_keys = set(zip(firm_rows["Sales Order"],
                                 firm_rows["Customer Item"],
                                 firm_rows["DateStr"]))
 
-            # Aggregate firm quantities
             for _, r in (firm_rows
-                         .groupby(["Sales Order", "Customer Item", "DateStr"], as_index=False)["Quantity"]
-                         .sum()
+                         .groupby(["Sales Order", "Customer Item", "DateStr"], as_index=False)
+                         ["Quantity"].sum()
                          .iterrows()):
-                row_dict[year_week(pd.to_datetime(r["DateStr"]))] += r["Quantity"]
+                wk = year_week(pd.to_datetime(r["DateStr"]))
+                if wk in row_dict:
+                    row_dict[wk] += r["Quantity"]
 
-            # Add forecast only where no firm exists
             for _, r in forecast_rows.iterrows():
                 if (r["Sales Order"], r["Customer Item"], r["DateStr"]) not in firm_keys:
-                    row_dict[year_week(pd.to_datetime(r["DateStr"]))] += r["Quantity"]
+                    wk = year_week(pd.to_datetime(r["DateStr"]))
+                    if wk in row_dict:
+                        row_dict[wk] += r["Quantity"]
 
             item_rows.append(row_dict)
             item_row_file_indices.append(file_idx)
 
         # Separator row
-        item_rows.append({col: "" for col in ["Item Number", "SnapshotWeek"] + all_weeks})
+        item_rows.append(
+            {col: "" for col in ["Item Number", "SnapshotWeek"] + all_weeks}
+        )
         item_row_file_indices.append(None)
 
     # Remove trailing separator
@@ -73,7 +88,6 @@ def generate_item_waterfall(files_bytes_list):
         item_row_file_indices.pop()
 
     waterfall_items = pd.DataFrame(item_rows)
-
     blank_pre_snapshot_weeks(waterfall_items, item_row_file_indices, snapshot_weeks, all_weeks)
 
     # ── Variation columns ─────────────────────────────────────────────────────
@@ -87,7 +101,8 @@ def generate_item_waterfall(files_bytes_list):
     waterfall_items["W-4"]  = var_w4
     waterfall_items["W-13"] = var_w13
 
-    item_cols_order = ["Item Number", "SnapshotWeek", "W-1", "W-2", "W-4", "W-13"] + all_weeks
+    item_cols_order = ["Item Number", "SnapshotWeek",
+                       "W-1", "W-2", "W-4", "W-13"] + all_weeks
     waterfall_items = waterfall_items[item_cols_order]
 
     # ── Write to Excel ────────────────────────────────────────────────────────
@@ -101,7 +116,6 @@ def generate_item_waterfall(files_bytes_list):
     header          = [cell.value for cell in ws[1]]
     col_name_to_idx = {name: idx + 1 for idx, name in enumerate(header)}
 
-    # Group index for alternating row colours
     group_index   = []
     current_group = -1
     current_key   = None
@@ -124,15 +138,17 @@ def generate_item_waterfall(files_bytes_list):
         id_cols         = {"Item Number"},
         snapshot_weeks  = snapshot_weeks,
         all_weeks       = all_weeks,
-        var_col_data    = {"W-1": var_w1, "W-2": var_w2, "W-4": var_w4, "W-13": var_w13},
+        var_col_data    = {"W-1": var_w1, "W-2": var_w2,
+                           "W-4": var_w4, "W-13": var_w13},
     )
 
     col_widths = {
-        "Item Number":  14, "SnapshotWeek": 12,
+        "Item Number": 14, "SnapshotWeek": 12,
         "W-1": 9, "W-2": 9, "W-4": 9, "W-13": 9,
     }
     for col_idx, col_name in enumerate(header, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = col_widths.get(col_name, 11)
+        ws.column_dimensions[get_column_letter(col_idx)].width = \
+            col_widths.get(col_name, 11)
 
     ws.freeze_panes          = "C2"
     ws.row_dimensions[1].height = 22
