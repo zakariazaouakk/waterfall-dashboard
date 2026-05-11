@@ -1,10 +1,5 @@
-import re
 import pandas as pd
 from openpyxl.styles import PatternFill, Font, Alignment
-
-# ── Sheet & column config ─────────────────────────────────────────────────────
-VALID_SHEETS     = ["Deljit QAD extraction", "Delfor QAD extraction"]
-REQUIRED_COLUMNS = ["Sales Order", "Item Number", "Customer Item", "Date", "Quantity"]
 
 # ── Colour palette ────────────────────────────────────────────────────────────
 HEADER_BG       = "1F4E79"
@@ -35,32 +30,17 @@ left_align   = Alignment(horizontal="left",   vertical="center")
 VAR_COLS      = {"W-1", "W-2", "W-4", "W-13"}
 RED_THRESHOLD = {"W-1": 0.20, "W-2": 0.20, "W-4": 0.20, "W-13": 0.20}
 
-# ── Parsing helpers ───────────────────────────────────────────────────────────
-def extract_week_from_filename(filename: str) -> int:
-    match = re.search(r"CW-?(\d+)", filename, re.IGNORECASE)
-    return int(match.group(1)) if match else 0
-
-def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = df.columns.str.strip().str.replace("\n", "").str.replace("\r", "")
-    return df
-
-def clean_sheet(df: pd.DataFrame) -> pd.DataFrame:
-    df = clean_columns(df)
-    df = df[REQUIRED_COLUMNS].copy()
-    for col in ["Sales Order", "Item Number", "Quantity"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df["Date"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
-    df = df.dropna(subset=["Sales Order", "Item Number", "Quantity", "Date"])
-    return df
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def year_week(date) -> str:
     iso = date.isocalendar()
     return f"W{iso[1]}-{iso[0]}"
 
-def cw_str_to_int(cw) -> int:
-    """Convert 'CW05' or 'CW5' → 5."""
-    match = re.search(r"\d+", str(cw))
-    return int(match.group()) if match else 0
+# ── Empty DataFrame scaffold ──────────────────────────────────────────────────
+_EMPTY_DF_COLS = ["Sales Order", "Item Number", "Customer Item",
+                  "Date", "Quantity", "YearWeek", "DateStr", "SheetType"]
+
+def empty_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=_EMPTY_DF_COLS)
 
 # ── Variation computation ─────────────────────────────────────────────────────
 def compute_variation(waterfall: pd.DataFrame, row_file_indices: list,
@@ -89,152 +69,6 @@ def compute_variation(waterfall: pd.DataFrame, row_file_indices: list,
             variation_col.append((curr_qty - prev_qty) / prev_qty)
 
     return variation_col
-
-# ── Empty DataFrame scaffold ──────────────────────────────────────────────────
-_EMPTY_DF_COLS = ["Sales Order", "Item Number", "Customer Item",
-                  "Date", "Quantity", "YearWeek", "DateStr", "SheetType"]
-
-def empty_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=_EMPTY_DF_COLS)
-
-# ── File loading ──────────────────────────────────────────────────────────────
-def load_excel_data(files_bytes_list: list) -> tuple[list, list, set]:
-    """
-    Parse every uploaded CW source file into a list of {Firm/Forecast: DataFrame} dicts.
-
-    Returns:
-        excel_data     – list of dicts, one per file
-        snapshot_weeks – list of CW integers, one per file
-        all_weeks_set  – set of 'WXX-YYYY' strings seen across all files
-    """
-    excel_data    = []
-    snapshot_weeks = []
-    all_weeks_set  = set()
-
-    for file_bytes, file_name in files_bytes_list:
-        week_num = extract_week_from_filename(file_name)
-        snapshot_weeks.append(week_num)
-
-        xl         = pd.ExcelFile(file_bytes)
-        excel_dict = {}
-        for sheet_name in xl.sheet_names:
-            if sheet_name in VALID_SHEETS:
-                df      = xl.parse(sheet_name)
-                df_type = "Firm" if "Deljit" in sheet_name else "Forecast"
-                df      = clean_sheet(df)
-                df["YearWeek"]  = df["Date"].apply(year_week)
-                df["DateStr"]   = df["Date"].dt.strftime("%Y-%m-%d")
-                df["SheetType"] = df_type
-                excel_dict[df_type] = df
-                all_weeks_set.update(df["YearWeek"].unique())
-        excel_data.append(excel_dict)
-
-    return excel_data, snapshot_weeks, all_weeks_set
-
-
-def read_waterfall_snapshots(waterfall_bytes, waterfall_type: str) -> tuple[list, list, set]:
-    """
-    Reconstruct (excel_data, snapshot_weeks, all_weeks_set) from a previously
-    generated waterfall Excel so it can be merged with new CW files.
-
-    waterfall_type: "detail" → expects Sales Order, Item Number, Customer Item
-                    "item"   → expects Item Number only
-    """
-    df = pd.read_excel(waterfall_bytes)
-
-    # Identify week columns (pattern: W<n>-<yyyy>)
-    week_col_pattern = re.compile(r"^W\d+-\d{4}$")
-    week_cols     = [c for c in df.columns if week_col_pattern.match(str(c))]
-    all_weeks_set = set(week_cols)
-
-    id_cols = (["Sales Order", "Item Number", "Customer Item"]
-               if waterfall_type == "detail" else ["Item Number"])
-
-    # Drop separator rows
-    df = df.dropna(subset=id_cols, how="all")
-    df = df[df[id_cols[0]].astype(str).str.strip() != ""]
-
-    # Each unique SnapshotWeek = one historical snapshot, sorted chronologically
-    snapshot_cw_values = sorted(df["SnapshotWeek"].dropna().unique(), key=cw_str_to_int)
-
-    excel_data     = []
-    snapshot_weeks = []
-
-    for cw_str in snapshot_cw_values:
-        cw_int      = cw_str_to_int(cw_str)
-        snapshot_df = df[df["SnapshotWeek"] == cw_str].copy()
-        snapshot_weeks.append(cw_int)
-
-        # Rebuild long-format rows from the week quantity columns.
-        # Everything is treated as "Firm" — the original split doesn't matter
-        # once the waterfall has been generated.
-        rows = []
-        for _, row in snapshot_df.iterrows():
-            for wk in week_cols:
-                val = row.get(wk, "")
-                try:
-                    qty = float(val)
-                except (ValueError, TypeError):
-                    continue
-                if qty == 0:
-                    continue
-
-                # Reconstruct a representative date (Monday of that ISO week)
-                try:
-                    wk_num  = int(wk.split("-")[0][1:])
-                    wk_year = int(wk.split("-")[1])
-                    date    = pd.Timestamp.fromisocalendar(wk_year, wk_num, 1)
-                except Exception:
-                    continue
-
-                rec = {
-                    "Quantity":  qty,
-                    "Date":      date,
-                    "YearWeek":  wk,
-                    "DateStr":   date.strftime("%Y-%m-%d"),
-                    "SheetType": "Firm",
-                }
-                for col in id_cols:
-                    rec[col] = row.get(col)
-                # Pad any missing scaffold columns with None
-                for col in _EMPTY_DF_COLS:
-                    rec.setdefault(col, None)
-                rows.append(rec)
-
-        rebuilt    = pd.DataFrame(rows) if rows else empty_df()
-        excel_data.append({"Firm": rebuilt})
-
-    return excel_data, snapshot_weeks, all_weeks_set
-
-
-def merge_excel_data(
-    prev_data: tuple[list, list, set],
-    new_data:  tuple[list, list, set],
-) -> tuple[list, list, set]:
-    """
-    Merge historical snapshot data with newly uploaded CW file data.
-
-    Raises ValueError listing any duplicate CW weeks so app.py can surface
-    the error to the user and stop.
-    """
-    prev_excel, prev_weeks, prev_week_cols = prev_data
-    new_excel,  new_weeks,  new_week_cols  = new_data
-
-    duplicates = set(prev_weeks) & set(new_weeks)
-    if duplicates:
-        dup_list = ", ".join(f"CW{w:02d}" for w in sorted(duplicates))
-        raise ValueError(
-            f"The following week(s) already exist in your previous waterfall "
-            f"and cannot be added again: **{dup_list}**.\n\n"
-            f"Please remove the duplicate file(s) and try again."
-        )
-
-    return (
-        prev_excel + new_excel,
-        prev_weeks + new_weeks,
-        prev_week_cols | new_week_cols,
-    )
-
 
 # ── Shared Excel formatting ───────────────────────────────────────────────────
 def blank_pre_snapshot_weeks(waterfall: pd.DataFrame, row_file_indices: list,
