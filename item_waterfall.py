@@ -4,23 +4,17 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from utils import (
-    load_excel_data, blank_pre_snapshot_weeks, apply_excel_formatting,
+    blank_pre_snapshot_weeks, apply_excel_formatting,
     compute_variation, empty_df, year_week,
 )
 
 
-def generate_item_waterfall(files_bytes_list, pre_loaded=None):
+def generate_item_waterfall(pre_loaded):
     """
     Generate item-aggregated waterfall Excel (one row per Item Number).
-
-    If pre_loaded=(excel_data, snapshot_weeks, all_weeks_set) is supplied
-    (e.g. after merging with a previous waterfall) it is used directly and
-    files_bytes_list is ignored for parsing.
+    pre_loaded = (excel_data, snapshot_weeks, all_weeks_set) from agent.py
     """
-    if pre_loaded is not None:
-        excel_data, snapshot_weeks, all_weeks_set = pre_loaded
-    else:
-        excel_data, snapshot_weeks, all_weeks_set = load_excel_data(files_bytes_list)
+    excel_data, snapshot_weeks, all_weeks_set = pre_loaded
 
     all_weeks = sorted(all_weeks_set,
                        key=lambda x: (int(x.split("-")[1]), int(x[1:].split("-")[0])))
@@ -130,16 +124,16 @@ def generate_item_waterfall(files_bytes_list, pre_loaded=None):
             group_index.append(current_group)
 
     apply_excel_formatting(
-        ws              = ws,
-        header          = header,
-        col_name_to_idx = col_name_to_idx,
-        row_file_indices= item_row_file_indices,
-        group_index     = group_index,
-        id_cols         = {"Item Number"},
-        snapshot_weeks  = snapshot_weeks,
-        all_weeks       = all_weeks,
-        var_col_data    = {"W-1": var_w1, "W-2": var_w2,
-                           "W-4": var_w4, "W-13": var_w13},
+        ws               = ws,
+        header           = header,
+        col_name_to_idx  = col_name_to_idx,
+        row_file_indices = item_row_file_indices,
+        group_index      = group_index,
+        id_cols          = {"Item Number"},
+        snapshot_weeks   = snapshot_weeks,
+        all_weeks        = all_weeks,
+        var_col_data     = {"W-1": var_w1, "W-2": var_w2,
+                            "W-4": var_w4, "W-13": var_w13},
     )
 
     col_widths = {
@@ -150,7 +144,7 @@ def generate_item_waterfall(files_bytes_list, pre_loaded=None):
         ws.column_dimensions[get_column_letter(col_idx)].width = \
             col_widths.get(col_name, 11)
 
-    ws.freeze_panes          = "C2"
+    ws.freeze_panes             = "C2"
     ws.row_dimensions[1].height = 22
 
     final_buffer = io.BytesIO()
