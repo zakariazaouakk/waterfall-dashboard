@@ -1,130 +1,57 @@
 import streamlit as st
-import io
-from detail_waterfall import generate_detail_waterfall
-from item_waterfall import generate_item_waterfall
-from utils import (
-    extract_week_from_filename,
-    load_excel_data,
-    read_waterfall_snapshots,
-    merge_excel_data,
-)
+import agent
 
-st.set_page_config(page_title="Waterfall Generator", page_icon="📊", layout="centered")
+st.set_page_config(page_title="Waterfall AI Agent", page_icon="🤖", layout="centered")
+st.title("🤖 Waterfall AI Agent")
+st.caption("Ask me to generate waterfalls or answer questions about your data.")
 
-st.title("Waterfall Generator")
-st.caption("Upload your Excel files and download the result.")
+# Chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-# ── Report type ───────────────────────────────────────────────────────────────
-report_type = st.radio(
-    "Select Report Type:",
-    ["Detail Waterfall (by Sales Order, Item, Customer Item)",
-     "Item Number Waterfall (aggregated by Item Number)"],
-    horizontal=True,
-)
-is_detail = "Detail" in report_type
+# Display past messages
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "file" in msg:
+            st.download_button(
+                "📥 Download Waterfall",
+                data      = msg["file"],
+                file_name = msg["filename"],
+                mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
-# ── Optional: previous waterfall ─────────────────────────────────────────────
-st.markdown("#### Previous Waterfall *(optional)*")
-st.caption(
-    "Upload a waterfall you generated before to continue from where you left off. "
-    "Only upload new CW file(s) below — weeks already in the waterfall will be rejected."
-)
-prev_waterfall_file = st.file_uploader(
-    "Previous waterfall Excel",
-    type=["xlsx"],
-    key="prev_waterfall",
-    label_visibility="collapsed",
-)
+# Chat input
+if prompt := st.chat_input("e.g. Give me a detail waterfall for weeks 11 to 13"):
+    # Show user message
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-# ── New CW files ──────────────────────────────────────────────────────────────
-st.markdown("#### New CW File(s)")
-uploaded_files = st.file_uploader(
-    "Excel files",
-    type=["xlsx", "xls"],
-    accept_multiple_files=True,
-    label_visibility="collapsed",
-)
+    # Run agent
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            text, file_buf, filename = agent.run_agent(prompt, st.session_state.history)
 
-# ── Generate ──────────────────────────────────────────────────────────────────
-if uploaded_files:
-    if st.button("Generate", use_container_width=True, type="primary"):
-        with st.spinner("Processing..."):
-            try:
-                # ── Deduplicate new files by CW week ─────────────────────────
-                unique_files   = {}
-                duplicate_weeks = set()
+        st.markdown(text)
 
-                for f in uploaded_files:
-                    week = extract_week_from_filename(f.name)
-                    if week == 0:
-                        st.error(f"File '{f.name}' does not contain a valid CW number.")
-                        st.stop()
-                    if week in unique_files:
-                        duplicate_weeks.add(week)
-                    else:
-                        unique_files[week] = f
+        msg_entry = {"role": "assistant", "content": text}
 
-                if duplicate_weeks:
-                    st.warning(
-                        f"Duplicate weeks among uploaded files — kept one of each: "
-                        f"{sorted(duplicate_weeks)}"
-                    )
+        if file_buf:
+            file_bytes = file_buf.read()
+            st.download_button(
+                "📥 Download Waterfall",
+                data      = file_bytes,
+                file_name = filename,
+                mime      = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+            msg_entry["file"]     = file_bytes
+            msg_entry["filename"] = filename
 
-                # Sort new files chronologically
-                files_bytes_list = [
-                    (io.BytesIO(f.read()), f.name)
-                    for f in sorted(unique_files.values(),
-                                    key=lambda f: extract_week_from_filename(f.name))
-                ]
+        st.session_state.messages.append(msg_entry)
 
-                # ── Load new CW data ──────────────────────────────────────────
-                new_data = load_excel_data(files_bytes_list)
-
-                # ── Merge with previous waterfall if provided ─────────────────
-                if prev_waterfall_file is not None:
-                    waterfall_type = "detail" if is_detail else "item"
-                    prev_data = read_waterfall_snapshots(
-                        io.BytesIO(prev_waterfall_file.read()), waterfall_type
-                    )
-                    # merge_excel_data raises ValueError on duplicate CW weeks
-                    merged = merge_excel_data(prev_data, new_data)
-                    excel_data, snapshot_weeks, all_weeks_set = merged
-                    # Re-pack into the format the generators expect
-                    files_bytes_list_final = None   # signal: use pre-loaded data
-                else:
-                    excel_data, snapshot_weeks, all_weeks_set = new_data
-                    files_bytes_list_final = None
-
-                # ── Generate report ───────────────────────────────────────────
-                # Pass pre-loaded data by injecting it; generators accept
-                # files_bytes_list OR pre_loaded tuple via keyword argument.
-                if is_detail:
-                    result = generate_detail_waterfall(
-                        files_bytes_list,
-                        pre_loaded=(excel_data, snapshot_weeks, all_weeks_set),
-                    )
-                    filename = "waterfall_detail.xlsx"
-                else:
-                    result = generate_item_waterfall(
-                        files_bytes_list,
-                        pre_loaded=(excel_data, snapshot_weeks, all_weeks_set),
-                    )
-                    filename = "waterfall_by_item.xlsx"
-
-                st.success("✅ Waterfall generated successfully!")
-
-                st.download_button(
-                    label="Download",
-                    data=result,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    type="primary",
-                )
-
-            except ValueError as e:
-                st.error(str(e))
-            except Exception as e:
-                st.error(f"Error: {str(e)}")
-                import traceback
-                st.code(traceback.format_exc())
+    # Update history for context
+    st.session_state.history.append({"role": "user",      "content": prompt})
+    st.session_state.history.append({"role": "assistant", "content": text})
