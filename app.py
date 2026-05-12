@@ -16,7 +16,7 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 # ── Rate limit config ─────────────────────────────────────────────────────────
-MAX_REQUESTS  = 10
+MAX_REQUESTS  = 2
 WINDOW_HOURS  = 1
 
 # ── Rate limit check ──────────────────────────────────────────────────────────
