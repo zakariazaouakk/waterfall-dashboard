@@ -79,8 +79,8 @@ def generate_detail_waterfall(pre_loaded):
 
         # Separator row
         waterfall_rows.append(
-            {col: "" for col in
-             ["Sales Order", "Item Number", "Customer Item", "SnapshotWeek"] + all_weeks}
+            {col: ("" if col not in all_weeks else None) for col in
+            ["Sales Order", "Item Number", "Customer Item", "SnapshotWeek"] + all_weeks}
         )
         row_file_indices.append(None)
 
