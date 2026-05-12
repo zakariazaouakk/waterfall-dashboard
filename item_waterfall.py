@@ -72,7 +72,8 @@ def generate_item_waterfall(pre_loaded):
 
         # Separator row
         item_rows.append(
-            {col: "" for col in ["Item Number", "SnapshotWeek"] + all_weeks}
+        {col: ("" if col not in all_weeks else None) for col in
+        ["Item Number", "SnapshotWeek"] + all_weeks}
         )
         item_row_file_indices.append(None)
 
