@@ -85,7 +85,7 @@ def blank_pre_snapshot_weeks(waterfall: pd.DataFrame, row_file_indices: list,
         if snapshot_week is None:
             continue
         for col_pos in range(all_weeks.index(snapshot_week)):
-            waterfall.at[row_idx, all_weeks[col_pos]] = ""
+            waterfall.at[row_idx, all_weeks[col_pos]] = None
 
 
 def apply_excel_formatting(ws, header: list, col_name_to_idx: dict,
