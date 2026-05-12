@@ -71,49 +71,67 @@ Important rules:
 
 # ── DB helper ─────────────────────────────────────────────────────────────────
 def get_conn():
-    return psycopg2.connect(**DB_CONFIG)
+    try:
+        return psycopg2.connect(**DB_CONFIG, connect_timeout=10)
+    except psycopg2.OperationalError as e:
+        raise ConnectionError(f"⚠️ Could not connect to the database. Please try again in a moment.\nDetails: {e}")
 
 
 # ── Tools (functions the AI can call) ─────────────────────────────────────────
 
 def list_sales_orders() -> list:
     """Return all distinct sales orders in the DB."""
-    conn = get_conn()
-    df = pd.read_sql(
-        "SELECT DISTINCT sales_order FROM firm_orders ORDER BY sales_order", conn
-    )
-    conn.close()
-    return df["sales_order"].astype(str).tolist()
+    try:
+        conn = get_conn()
+        df = pd.read_sql(
+            "SELECT DISTINCT sales_order FROM firm_orders ORDER BY sales_order", conn
+        )
+        conn.close()
+        return df["sales_order"].astype(str).tolist()
+    except ConnectionError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"⚠️ Failed to list sales orders: {str(e)}"}
 
 
 def list_items(sales_order: int = None) -> list:
     """Return distinct item numbers, optionally filtered by sales order."""
-    conn = get_conn()
-    if sales_order:
-        df = pd.read_sql(
-            """
-            SELECT DISTINCT item_number FROM firm_orders
-            WHERE sales_order = %s ORDER BY item_number
-            """,
-            conn,
-            params=(sales_order,),
-        )
-    else:
-        df = pd.read_sql(
-            "SELECT DISTINCT item_number FROM firm_orders ORDER BY item_number", conn
-        )
-    conn.close()
-    return df["item_number"].astype(str).tolist()
+    try:
+        conn = get_conn()
+        if sales_order:
+            df = pd.read_sql(
+                """
+                SELECT DISTINCT item_number FROM firm_orders
+                WHERE sales_order = %s ORDER BY item_number
+                """,
+                conn,
+                params=(sales_order,),
+            )
+        else:
+            df = pd.read_sql(
+                "SELECT DISTINCT item_number FROM firm_orders ORDER BY item_number", conn
+            )
+        conn.close()
+        return df["item_number"].astype(str).tolist()
+    except ConnectionError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"⚠️ Failed to list items: {str(e)}"}
 
 
 def list_weeks() -> list:
     """Return all snapshot weeks available in the DB."""
-    conn = get_conn()
-    df = pd.read_sql(
-        "SELECT DISTINCT snapshot_week FROM firm_orders ORDER BY snapshot_week", conn
-    )
-    conn.close()
-    return [f"CW{w:02d}" for w in df["snapshot_week"].tolist()]
+    try:
+        conn = get_conn()
+        df = pd.read_sql(
+            "SELECT DISTINCT snapshot_week FROM firm_orders ORDER BY snapshot_week", conn
+        )
+        conn.close()
+        return [f"CW{w:02d}" for w in df["snapshot_week"].tolist()]
+    except ConnectionError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"⚠️ Failed to list weeks: {str(e)}"}
 
 
 def query_data(question: str) -> dict:
@@ -122,13 +140,14 @@ def query_data(question: str) -> dict:
     both the SQL used and a formatted answer.
     """
     # ── Step 1: gpt-4o-mini writes the SQL ───────────────────────────────────
-    sql_response = client.chat.completions.create(
-        model       = "gpt-4o-mini",
-        temperature = 0,
-        messages    = [
-            {
-                "role": "system",
-                "content": f"""
+    try:
+        sql_response = client.chat.completions.create(
+            model       = "gpt-4o-mini",
+            temperature = 0,
+            messages    = [
+                {
+                    "role": "system",
+                    "content": f"""
 You are an expert PostgreSQL data analyst.
 Given a question, write a single valid PostgreSQL SELECT query to answer it.
 {DB_SCHEMA}
@@ -138,10 +157,12 @@ Rules:
 - Always LIMIT results to 50 rows maximum unless the question asks for all
 - Use clear column aliases so results are readable
 """,
-            },
-            {"role": "user", "content": question},
-        ],
-    )
+                },
+                {"role": "user", "content": question},
+            ],
+        )
+    except Exception as e:
+        return {"error": f"⚠️ AI service is temporarily unavailable. Please try again in a moment."}
 
     sql = sql_response.choices[0].message.content.strip()
 
@@ -154,42 +175,52 @@ Rules:
     sql_no_aliases = re.sub(r'\bAS\s+\w+', "", sql_no_strings, flags=re.IGNORECASE)
 
     if destructive_pattern.search(sql_no_aliases):
-        return {"error": "Query blocked for safety reasons.", "sql": sql}
+        return {"error": "⚠️ Query blocked for safety reasons.", "sql": sql}
 
     # ── Step 3: Execute the SQL ───────────────────────────────────────────────
-    conn = get_conn()
     try:
-        result_df = pd.read_sql(sql, conn)
-    except Exception as e:
-        return {"error": f"SQL execution failed: {str(e)}", "sql": sql}
-    finally:
-        conn.close()
+        conn = get_conn()
+        try:
+            result_df = pd.read_sql(sql, conn)
+        except Exception as e:
+            return {"error": f"⚠️ SQL execution failed: {str(e)}", "sql": sql}
+        finally:
+            conn.close()
+    except ConnectionError as e:
+        return {"error": str(e)}
+
+    if result_df.empty:
+        return {"error": "⚠️ The query returned no results. Try rephrasing your question or check your filters."}
 
     # ── Step 4: Format the result ─────────────────────────────────────────────
-    if len(result_df) <= 5 and len(result_df.columns) <= 4:
+    try:
+        if len(result_df) <= 5 and len(result_df.columns) <= 4:
+            formatted_answer = result_df.to_string(index=False)
+        else:
+            format_response = client.chat.completions.create(
+                model    = "gpt-4o-mini",
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a supply chain analyst. Format the query result "
+                            "into a clear, concise answer. Use bullet points or a small "
+                            "table if it helps. Be specific with numbers."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Question: {question}\n\n"
+                            f"Query result:\n{result_df.to_string(index=False)}"
+                        ),
+                    },
+                ],
+            )
+            formatted_answer = format_response.choices[0].message.content
+    except Exception as e:
+        # Fallback to raw result if formatting fails
         formatted_answer = result_df.to_string(index=False)
-    else:
-        format_response = client.chat.completions.create(
-            model    = "gpt-4o-mini",
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a supply chain analyst. Format the query result "
-                        "into a clear, concise answer. Use bullet points or a small "
-                        "table if it helps. Be specific with numbers."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Question: {question}\n\n"
-                        f"Query result:\n{result_df.to_string(index=False)}"
-                    ),
-                },
-            ],
-        )
-        formatted_answer = format_response.choices[0].message.content
 
     return {
         "answer": formatted_answer,
@@ -207,66 +238,77 @@ def get_waterfall(
     """Generate a waterfall Excel from the DB and return the file buffer."""
     from utils import year_week
 
-    conn = get_conn()
+    try:
+        conn = get_conn()
+    except ConnectionError as e:
+        return None, str(e)
 
-    week_filter = f"AND snapshot_week = ANY(ARRAY{weeks})"
-    so_filter   = f"AND sales_order = ANY(ARRAY{sales_orders})" if sales_orders else ""
-    item_filter = f"AND item_number  = ANY(ARRAY{item_numbers})" if item_numbers else ""
+    try:
+        week_filter = f"AND snapshot_week = ANY(ARRAY{weeks})"
+        so_filter   = f"AND sales_order = ANY(ARRAY{sales_orders})" if sales_orders else ""
+        item_filter = f"AND item_number  = ANY(ARRAY{item_numbers})" if item_numbers else ""
 
-    firm_df = pd.read_sql(
-        f"""
-        SELECT snapshot_week, sales_order, item_number, customer_item, date, quantity
-        FROM firm_orders WHERE 1=1 {week_filter} {so_filter} {item_filter}
-        """,
-        conn,
-    )
-    fore_df = pd.read_sql(
-        f"""
-        SELECT snapshot_week, sales_order, item_number, customer_item, date, quantity
-        FROM forecasts WHERE 1=1 {week_filter} {so_filter} {item_filter}
-        """,
-        conn,
-    )
-    conn.close()
+        firm_df = pd.read_sql(
+            f"""
+            SELECT snapshot_week, sales_order, item_number, customer_item, date, quantity
+            FROM firm_orders WHERE 1=1 {week_filter} {so_filter} {item_filter}
+            """,
+            conn,
+        )
+        fore_df = pd.read_sql(
+            f"""
+            SELECT snapshot_week, sales_order, item_number, customer_item, date, quantity
+            FROM forecasts WHERE 1=1 {week_filter} {so_filter} {item_filter}
+            """,
+            conn,
+        )
+    except Exception as e:
+        return None, f"⚠️ Failed to fetch data from the database: {str(e)}"
+    finally:
+        conn.close()
 
     if firm_df.empty and fore_df.empty:
-        return None, "No data found for those filters."
+        return None, "⚠️ No data found for those filters. Try different weeks, sales orders, or item numbers."
 
-    excel_data          = []
-    snapshot_weeks_list = sorted(weeks)
-    all_weeks_set       = set()
+    try:
+        excel_data          = []
+        snapshot_weeks_list = sorted(weeks)
+        all_weeks_set       = set()
 
-    for week in snapshot_weeks_list:
-        f = firm_df[firm_df["snapshot_week"] == week].copy()
-        p = fore_df[fore_df["snapshot_week"] == week].copy()
+        for week in snapshot_weeks_list:
+            f = firm_df[firm_df["snapshot_week"] == week].copy()
+            p = fore_df[fore_df["snapshot_week"] == week].copy()
 
-        for df in [f, p]:
-            df["Date"]      = pd.to_datetime(df["date"])
-            df["YearWeek"]  = df["Date"].apply(year_week)
-            df["DateStr"]   = df["Date"].dt.strftime("%Y-%m-%d")
-            df["SheetType"] = "Firm"
-            all_weeks_set.update(df["YearWeek"].unique())
+            for df in [f, p]:
+                df["Date"]      = pd.to_datetime(df["date"])
+                df["YearWeek"]  = df["Date"].apply(year_week)
+                df["DateStr"]   = df["Date"].dt.strftime("%Y-%m-%d")
+                df["SheetType"] = "Firm"
+                all_weeks_set.update(df["YearWeek"].unique())
 
-        f = f.rename(columns={
-            "sales_order": "Sales Order", "item_number": "Item Number",
-            "customer_item": "Customer Item", "quantity": "Quantity",
-        })
-        p = p.rename(columns={
-            "sales_order": "Sales Order", "item_number": "Item Number",
-            "customer_item": "Customer Item", "quantity": "Quantity",
-        })
-        excel_data.append({"Firm": f, "Forecast": p})
+            f = f.rename(columns={
+                "sales_order": "Sales Order", "item_number": "Item Number",
+                "customer_item": "Customer Item", "quantity": "Quantity",
+            })
+            p = p.rename(columns={
+                "sales_order": "Sales Order", "item_number": "Item Number",
+                "customer_item": "Customer Item", "quantity": "Quantity",
+            })
+            excel_data.append({"Firm": f, "Forecast": p})
 
-    pre_loaded = (excel_data, snapshot_weeks_list, all_weeks_set)
+        pre_loaded = (excel_data, snapshot_weeks_list, all_weeks_set)
 
-    if waterfall_type == "detail":
-        buf      = generate_detail_waterfall(pre_loaded)
-        filename = "waterfall_detail.xlsx"
-    else:
-        buf      = generate_item_waterfall(pre_loaded)
-        filename = "waterfall_by_item.xlsx"
+        if waterfall_type == "detail":
+            buf      = generate_detail_waterfall(pre_loaded)
+            filename = "waterfall_detail.xlsx"
+        else:
+            buf      = generate_item_waterfall(pre_loaded)
+            filename = "waterfall_by_item.xlsx"
 
-    return buf, filename
+        return buf, filename
+
+    except Exception as e:
+        return None, f"⚠️ Failed to generate the waterfall report: {str(e)}"
 
 
 # ── Tool definitions for OpenAI ───────────────────────────────────────────────
@@ -403,61 +445,73 @@ def run_agent(user_message: str, history: list) -> tuple:
     last_sql    = None
     last_rows   = None
 
-    while True:
-        response = client.chat.completions.create(
-            model    = "gpt-4o-mini",
-            messages = messages,
-            tools    = TOOLS,
-        )
-        msg = response.choices[0].message
-
-        # ── No tool call → final answer ───────────────────────────────────────
-        if not msg.tool_calls:
-            final_text = msg.content
-
-            if last_sql:
-                final_text = (
-                    f"{msg.content}\n\n"
-                    f"---\n"
-                    f"```sql\n{last_sql}\n```\n"
-                    f"*{last_rows} row(s) returned*"
+    try:
+        while True:
+            try:
+                response = client.chat.completions.create(
+                    model    = "gpt-4o-mini",
+                    messages = messages,
+                    tools    = TOOLS,
                 )
+            except Exception as e:
+                return "⚠️ The AI service is temporarily unavailable. Please try again in a moment.", None, None
 
-            return final_text, file_buffer, filename
+            msg = response.choices[0].message
 
-        # ── Handle tool calls ─────────────────────────────────────────────────
-        messages.append(msg)
+            # ── No tool call → final answer ───────────────────────────────────
+            if not msg.tool_calls:
+                final_text = msg.content
 
-        for tool_call in msg.tool_calls:
-            fn_name = tool_call.function.name
-            args    = json.loads(tool_call.function.arguments)
+                if last_sql:
+                    final_text = (
+                        f"{msg.content}\n\n"
+                        f"---\n"
+                        f"```sql\n{last_sql}\n```\n"
+                        f"*{last_rows} row(s) returned*"
+                    )
 
-            if fn_name == "get_waterfall":
-                file_buffer, filename = get_waterfall(**args)
-                result = (
-                    f"Waterfall generated successfully: {filename}"
-                    if file_buffer
-                    else filename
-                )
+                return final_text, file_buffer, filename
 
-            elif fn_name == "query_data":
-                query_result = query_data(**args)
+            # ── Handle tool calls ─────────────────────────────────────────────
+            messages.append(msg)
 
-                if "error" in query_result:
-                    last_sql  = query_result.get("sql")
-                    last_rows = 0
-                    result    = f"Error running query: {query_result['error']}"
-                else:
-                    last_sql  = query_result["sql"]
-                    last_rows = query_result["rows"]
-                    result    = query_result["answer"]
+            for tool_call in msg.tool_calls:
+                fn_name = tool_call.function.name
+                args    = json.loads(tool_call.function.arguments)
 
-            else:
-                fn     = TOOL_MAP[fn_name]
-                result = fn(**args)
+                try:
+                    if fn_name == "get_waterfall":
+                        file_buffer, filename = get_waterfall(**args)
+                        result = (
+                            f"Waterfall generated successfully: {filename}"
+                            if file_buffer
+                            else filename
+                        )
 
-            messages.append({
-                "role":         "tool",
-                "tool_call_id": tool_call.id,
-                "content":      json.dumps(result),
-            })
+                    elif fn_name == "query_data":
+                        query_result = query_data(**args)
+
+                        if "error" in query_result:
+                            last_sql  = query_result.get("sql")
+                            last_rows = 0
+                            result    = f"Error running query: {query_result['error']}"
+                        else:
+                            last_sql  = query_result["sql"]
+                            last_rows = query_result["rows"]
+                            result    = query_result["answer"]
+
+                    else:
+                        fn     = TOOL_MAP[fn_name]
+                        result = fn(**args)
+
+                except Exception as e:
+                    result = f"⚠️ Tool '{fn_name}' failed: {str(e)}"
+
+                messages.append({
+                    "role":         "tool",
+                    "tool_call_id": tool_call.id,
+                    "content":      json.dumps(result),
+                })
+
+    except Exception as e:
+        return f"⚠️ Something went wrong. Please try again.\nDetails: {str(e)}", None, None
